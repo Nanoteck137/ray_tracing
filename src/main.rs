@@ -1,6 +1,25 @@
+use math::Vec3;
+
+mod math;
+
 fn main() {
     let image_width = 256usize;
     let image_height = 256usize;
+
+    let test = Vec3::new(1.0, 2.0, 3.0);
+    let test2 = Vec3::new(3.0, 2.0, 1.0);
+    println!("{}", test);
+    println!("{}", test.length());
+    println!("{}", test + test2);
+    println!("{}", test - test2);
+    println!("{}", test * test2);
+    println!("{}", test / test2);
+    println!("{}", -test);
+    println!("{}", test + 2.0);
+    println!("{}", test - 2.0);
+    println!("{}", test * 2.0);
+    println!("{}", test / 2.0);
+    println!("{}", test.normalize());
 
     let mut image = bmp::Image::new(image_width as u32, image_height as u32);
 
