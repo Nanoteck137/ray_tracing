@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::collections::VecDeque;
 use glam::f32::{ Vec3, Vec2 };
 
 struct Ray {
@@ -241,9 +242,17 @@ fn random_unit_vec3() -> Vec3 {
     random_vec3_in_unit_shpere().normalize()
 }
 
+struct TileJob {
+    x: usize,
+    y: usize,
+
+    width: usize,
+    height: usize,
+}
+
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 400;
+    let image_width = 1920;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
@@ -281,6 +290,106 @@ fn main() {
     };
 
     let mut image = bmp::Image::new(image_width as u32, image_height as u32);
+
+    let mut job_queue = VecDeque::new();
+
+    let tile_width = 32;
+    let tile_height = 32;
+
+    for tile_y in 0..(image_height / tile_height) {
+        for tile_x in 0..(image_width / tile_width) {
+            job_queue.push_back(TileJob {
+                x: tile_x * tile_width,
+                y: tile_y * tile_height,
+
+                width: tile_width,
+                height: tile_height,
+            });
+        }
+    }
+
+    let num_tiles_x = image_width / tile_width;
+    let num_tiles_y = image_height / tile_height;
+
+    if (image_height % tile_height) > 0{
+        for i in 0..num_tiles_x {
+            let tile_x = i;
+            let tw = tile_width;
+            let th = image_height % tile_height;
+
+            let start_y = num_tiles_y * tile_height;
+
+            job_queue.push_back(TileJob {
+                x: tile_x * tw,
+                y: start_y,
+
+                width: tw,
+                height: th,
+            });
+        }
+    }
+
+    if (image_width % tile_width) > 0{
+        for i in 0..num_tiles_y {
+            let tile_y = i;
+            let tw = image_width % tile_width;
+            let th = tile_height;
+
+            let start_x = num_tiles_x * tile_width;
+
+            job_queue.push_back(TileJob {
+                x: start_x,
+                y: tile_y * th,
+
+                width: tw,
+                height: th,
+            });
+        }
+    }
+
+    let tw = image_width % tile_width;
+    let th = image_height % tile_height;
+
+    if tw != 0 && th != 0 {
+        let start_x = num_tiles_x * tile_width;
+        let start_y = num_tiles_y * tile_width;
+
+        job_queue.push_back(TileJob {
+            x: start_x,
+            y: start_y,
+
+            width: tw,
+            height: th,
+        });
+    }
+
+    while !job_queue.is_empty() {
+        let job = job_queue.pop_front().unwrap();
+
+        for yoff in 0..job.height {
+            for xoff in 0..job.width {
+                let pixel_x = job.x + xoff;
+                let pixel_y = job.y + yoff;
+
+                let pixel_x = pixel_x as u32;
+                let pixel_y = pixel_y as u32;
+
+                let r = xoff as f32 / job.width as f32;
+                let g = yoff as f32 / job.height as f32;
+
+                let r = (r * 255.0) as u8;
+                let g = (g * 255.0) as u8;
+                let pixel = bmp::Pixel::new(r, g, 0);
+                image.set_pixel(pixel_x, pixel_y, pixel);
+            }
+        }
+    }
+
+    image.save("result.bmp")
+        .expect("Failed to save image");
+
+    return;
+
 
     let now = Instant::now();
 
