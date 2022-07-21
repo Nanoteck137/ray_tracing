@@ -252,11 +252,11 @@ struct TileJob {
 
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 1920;
+    let image_width = 400;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
-    let samples_per_pixel = 30;
+    let samples_per_pixel = 10;
     let max_depth = 4;
     let camera = Camera::new();
 
@@ -363,6 +363,7 @@ fn main() {
         });
     }
 
+    /*
     while !job_queue.is_empty() {
         let job = job_queue.pop_front().unwrap();
 
@@ -384,15 +385,11 @@ fn main() {
             }
         }
     }
-
-    image.save("result.bmp")
-        .expect("Failed to save image");
-
-    return;
-
+    */
 
     let now = Instant::now();
 
+    /*
     for y in 0..image_height {
         let per = ((y as f32 / image_height as f32) * 100.0) as u32;
         print!("\rWorking: {}%", per);
@@ -416,6 +413,35 @@ fn main() {
         }
     }
     println!();
+    */
+
+
+    while !job_queue.is_empty() {
+        let job = job_queue.pop_front().unwrap();
+
+        for yoff in 0..job.height {
+            for xoff in 0..job.width {
+                let x = job.x + xoff;
+                let y = job.y + yoff;
+
+                let mut pixel_color = Vec3::new(0.0, 0.0, 0.0);
+                for sample in 0..samples_per_pixel {
+                    let u = (x as f32 + rand::random::<f32>()) / image_width as f32;
+                    let v = (y as f32 + rand::random::<f32>()) / image_height as f32;
+                    let uv = Vec2::new(u, v);
+
+                    let ray = camera.get_ray(uv);
+                    let color = world.shoot_ray(&ray, max_depth);
+                    pixel_color += color;
+                }
+
+                write_pixel_to_image(&mut image, image_width, image_height,
+                                     x, y,
+                                     pixel_color,
+                                     samples_per_pixel);
+            }
+        }
+    }
 
     let elapsed_time = now.elapsed();
     println!("Time: {:.2} s ({} ms)", elapsed_time.as_secs_f32(), elapsed_time.as_millis());
