@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use std::sync::{ Arc, Mutex, RwLock };
 use glam::f32::{ Vec3, Vec2 };
 
-const SAMPLES_PER_PIXEL: usize = 500;
-const MAX_DEPTH: usize = 10;
+const SAMPLES_PER_PIXEL: usize = 200;
+const MAX_DEPTH: usize = 20;
 
 struct Ray {
     origin: Vec3,
@@ -129,11 +129,25 @@ struct HitRecord {
     normal: Vec3,
     t: f32,
 
+    front_face: bool,
+
     material_id: usize,
+}
+
+impl HitRecord {
+    fn set_face_normal(&mut self, ray: &Ray, outward_normal: Vec3) {
+        self.front_face = ray.dir.dot(outward_normal) < 0.0;
+        self.normal = if self.front_face {
+            outward_normal
+        } else {
+            -outward_normal
+        };
+    }
 }
 
 struct Material {
     color: Vec3,
+    reflecting: bool,
 }
 
 struct Sphere {
@@ -170,11 +184,18 @@ impl Sphere {
 
         record.t = root;
         record.point = ray.at(record.t);
-        record.normal = (record.point - self.position) / self.radius;
+        let normal = (record.point - self.position) / self.radius;
+        record.set_face_normal(ray, normal);
         record.material_id = self.material_id;
 
         true
     }
+}
+
+fn reflectance(cosine: f32, ref_index: f32) -> f32 {
+    let r0 = (1.0 - ref_index) / (1.0 + ref_index);
+    let r0 = r0 * r0;
+    r0 + (1.0 - r0) * (1.0 - cosine).powf(5.0)
 }
 
 struct World {
@@ -206,13 +227,57 @@ impl World {
         }
 
         if let Some(record) = self.hit(ray, 0.001, f32::MAX) {
-            let target = record.point + record.normal + random_unit_vec3();
-            let new_ray = Ray::new(record.point, target - record.point);
-
             let material = &self.materials[record.material_id];
-            let color = material.color * self.shoot_ray(&new_ray, depth - 1);
 
-            return color;
+            // let target = record.point + random_in_hemisphere(record.normal);
+            // let new_ray = Ray::new(record.point, target - record.point);
+
+            // let mut final_color = material.color;
+            // final_color = Vec3::new(1.0, 1.0, 1.0);
+
+            let ir = 1.5;
+            let refraction_ratio = if record.front_face {
+                1.0 / ir
+            } else {
+                ir
+            };
+
+            let d = ray.dir.normalize();
+            let cos_theta = ((-d).dot(record.normal)).min(1.0);
+            let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+            let cannot_refract = (refraction_ratio * sin_theta) > 1.0;
+
+            let dir = if cannot_refract || reflectance(cos_theta, refraction_ratio) > rand::random::<f32>() {
+                reflect(d, record.normal)
+            } else {
+                refract(d, record.normal, refraction_ratio)
+            };
+
+            // let refracted = refract(d, record.normal, refraction_ratio);
+            let new_ray = Ray::new(record.point, dir);
+
+            let final_color = if material.reflecting {
+                let attenuation = Vec3::new(1.0, 1.0, 1.0);
+                attenuation * self.shoot_ray(&new_ray, depth - 1)
+            } else {
+                material.color
+            };
+
+            // let final_color = 0.5 * record.normal + 0.5;
+
+            // NOTE(patrik): Metallic
+            /*
+            let reflected = reflect(ray.dir, record.normal);
+            let fuzz = 0.5;
+            let new_ray = Ray::new(record.point, reflected + fuzz * random_vec3_in_unit_sphere());
+
+            if material.reflecting && reflected.dot(record.normal) > 0.0 {
+                color *= self.shoot_ray(&new_ray, depth - 1);
+            }
+            */
+
+            return final_color;
         }
 
         let dir = ray.dir.normalize();
@@ -232,7 +297,7 @@ fn random_vec3() -> Vec3 {
     Vec3::new(x, y, z)
 }
 
-fn random_vec3_in_unit_shpere() -> Vec3 {
+fn random_vec3_in_unit_sphere() -> Vec3 {
     loop {
         let v = random_vec3();
         if v.length_squared() >= 1.0 {
@@ -244,7 +309,29 @@ fn random_vec3_in_unit_shpere() -> Vec3 {
 }
 
 fn random_unit_vec3() -> Vec3 {
-    random_vec3_in_unit_shpere().normalize()
+    random_vec3_in_unit_sphere().normalize()
+}
+
+fn random_in_hemisphere(normal: Vec3) -> Vec3 {
+    let unit_sphere = random_vec3_in_unit_sphere();
+    if unit_sphere.dot(normal) > 0.0 {
+        return unit_sphere;
+    } else {
+        return -unit_sphere;
+    }
+}
+
+fn reflect(input: Vec3, normal: Vec3) -> Vec3 {
+    let dn = 2.0 * input.dot(normal);
+    input - normal * dn
+}
+
+fn refract(uv: Vec3, n: Vec3, etai_over_etat: f32) -> Vec3 {
+    let cos_theta = ((-uv).dot(n)).min(1.0);
+    let out_perp = etai_over_etat * (uv + cos_theta * n);
+    let out_parallel = -((1.0 - out_perp.length_squared()).abs()).sqrt() * n;
+
+    out_perp + out_parallel
 }
 
 struct TileJob {
@@ -346,7 +433,7 @@ fn worker(data: WorkerData)
 
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 400;
+    let image_width = 800;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
@@ -355,25 +442,46 @@ fn main() {
     let mut materials = Vec::new();
     materials.push(Material {
         color: Vec3::new(1.0, 0.0, 1.0),
+        reflecting: true,
+    });
+
+    materials.push(Material {
+        color: Vec3::new(0.1, 0.1, 0.6),
+        reflecting: false,
     });
 
     materials.push(Material {
         color: Vec3::new(0.3, 0.8, 0.3),
+        reflecting: false,
     });
 
     let mut spheres = Vec::new();
     spheres.push(Sphere {
-        position: Vec3::new(0.0, 0.0, -1.0),
+        position: Vec3::new(-1.0, 0.0, -1.0),
         radius: 0.5,
 
         material_id: 0,
     });
 
     spheres.push(Sphere {
+        position: Vec3::new(-1.0, 0.0, -1.0),
+        radius: -0.4,
+
+        material_id: 0,
+    });
+
+    spheres.push(Sphere {
+        position: Vec3::new(1.0, 0.0, -1.0),
+        radius: 0.5,
+
+        material_id: 1,
+    });
+
+    spheres.push(Sphere {
         position: Vec3::new(0.0, -100.5, -1.0),
         radius: 100.0,
 
-        material_id: 1,
+        material_id: 2,
     });
 
     let world = World {
@@ -385,8 +493,8 @@ fn main() {
 
     let mut job_queue = VecDeque::new();
 
-    let tile_width = 32;
-    let tile_height = 32;
+    let tile_width = 64;
+    let tile_height = 64;
 
     for tile_y in 0..(image_height / tile_height) {
         for tile_x in 0..(image_width / tile_width) {
@@ -496,8 +604,11 @@ fn main() {
     // 1 thread(s) (release) : Time: 0.89 s (894 ms)
     // 4 thread(s) (release) : Time: 0.23 s (233 ms)
     // 8 thread(s) (release) : Time: 0.17 s (166 ms)
+    //
+    // Time: 27.61 s (27607 ms)
+    // Time: 19.22 s (19224 ms)
 
-    let num_threads = 4;
+    let num_threads = 8;
     let mut thread_join_handles = Vec::with_capacity(num_threads);
     for thread_id in 0..num_threads {
         let data = WorkerData {
