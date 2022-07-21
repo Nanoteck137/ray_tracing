@@ -1,6 +1,10 @@
 use std::time::Instant;
 use std::collections::VecDeque;
+use std::sync::{ Arc, Mutex, RwLock };
 use glam::f32::{ Vec3, Vec2 };
+
+const SAMPLES_PER_PIXEL: usize = 500;
+const MAX_DEPTH: usize = 10;
 
 struct Ray {
     origin: Vec3,
@@ -17,6 +21,7 @@ impl Ray {
     }
 }
 
+#[derive(Clone)]
 struct Camera {
     origin: Vec3,
     lower_left_corner: Vec3,
@@ -250,14 +255,101 @@ struct TileJob {
     height: usize,
 }
 
+struct JobResult {
+    x: usize,
+    y: usize,
+
+    width: usize,
+    height: usize,
+
+    pixel_colors: Vec<Vec3>,
+}
+
+fn execute_job(job: &TileJob,
+               image_width: usize,
+               image_height: usize,
+               camera: &Camera,
+               world: &World)
+    -> JobResult
+{
+    let size = job.width * job.height;
+    let mut result = Vec::with_capacity(size);
+
+    for yoff in 0..job.height {
+        for xoff in 0..job.width {
+            let x = job.x + xoff;
+            let y = job.y + yoff;
+
+            let mut pixel_color = Vec3::new(0.0, 0.0, 0.0);
+            for _sample in 0..SAMPLES_PER_PIXEL {
+                let u = (x as f32 + rand::random::<f32>()) / image_width as f32;
+                let v = (y as f32 + rand::random::<f32>()) / image_height as f32;
+                let uv = Vec2::new(u, v);
+
+                let ray = camera.get_ray(uv);
+                let color = world.shoot_ray(&ray, MAX_DEPTH);
+                pixel_color += color;
+            }
+
+            result.push(pixel_color);
+        }
+    }
+
+    JobResult {
+        x: job.x,
+        y: job.y,
+
+        width: job.width,
+        height: job.height,
+
+        pixel_colors: result,
+    }
+}
+
+struct WorkerData {
+    thread_id: usize,
+
+    image_width: usize,
+    image_height: usize,
+    world: Arc<RwLock<World>>,
+    camera: Camera,
+
+    job_queue: Arc<Mutex<VecDeque<TileJob>>>,
+    job_results: Arc<Mutex<Vec<JobResult>>>,
+}
+
+fn worker(data: WorkerData)
+{
+    loop {
+        let job = {
+            let mut lock = data.job_queue.lock().unwrap();
+            lock.pop_front()
+        };
+
+        if let Some(job) = job {
+            let world_lock = data.world.read().unwrap();
+            let result = execute_job(&job,
+                                     data.image_width,
+                                     data.image_height,
+                                     &data.camera,
+                                     &world_lock);
+            {
+                let mut lock = data.job_results.lock().unwrap();
+                lock.push(result);
+            }
+        } else {
+            // NOTE(patrik): Queue empty
+            break;
+        }
+    }
+}
+
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
     let image_width = 400;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
-    let samples_per_pixel = 10;
-    let max_depth = 4;
     let camera = Camera::new();
 
     let mut materials = Vec::new();
@@ -387,58 +479,97 @@ fn main() {
     }
     */
 
+    // Thread:
+    //   Look for job
+    //   Execute job
+    //   Send the result
+
+    let job_queue = Arc::new(Mutex::new(job_queue));
+    let job_results = Arc::new(Mutex::new(Vec::new()));
+
+    let world = Arc::new(RwLock::new(world));
+
+    // 1 thread(s) (debug) : Time: 19.78 s (19777 ms)
+    // 4 thread(s) (debug) : Time: 5.28 s (5279 ms)
+    // 8 thread(s) (debug) : Time: 4.11 s (4106 ms)
+    //
+    // 1 thread(s) (release) : Time: 0.89 s (894 ms)
+    // 4 thread(s) (release) : Time: 0.23 s (233 ms)
+    // 8 thread(s) (release) : Time: 0.17 s (166 ms)
+
+    let num_threads = 4;
+    let mut thread_join_handles = Vec::with_capacity(num_threads);
+    for thread_id in 0..num_threads {
+        let data = WorkerData {
+            thread_id,
+
+            image_width,
+            image_height,
+
+            world: world.clone(),
+            camera: camera.clone(),
+
+            job_queue: job_queue.clone(),
+            job_results: job_results.clone(),
+        };
+
+        let join_handle = std::thread::spawn(move || {
+            worker(data);
+        });
+
+        thread_join_handles.push(join_handle);
+    }
+
     let now = Instant::now();
 
     /*
-    for y in 0..image_height {
-        let per = ((y as f32 / image_height as f32) * 100.0) as u32;
-        print!("\rWorking: {}%", per);
-        for x in 0..image_width {
-            let mut pixel_color = Vec3::new(0.0, 0.0, 0.0);
+    let mut lock = job_queue.lock().unwrap();
+    while !lock.is_empty() {
+        let job = lock.pop_front().unwrap();
 
-            for sample in 0..samples_per_pixel {
-                let u = (x as f32 + rand::random::<f32>()) / image_width as f32;
-                let v = (y as f32 + rand::random::<f32>()) / image_height as f32;
-                let uv = Vec2::new(u, v);
+        let world_lock = world.read().unwrap();
+        let result = execute_job(&job,
+                                 image_width,
+                                 image_height,
+                                 &camera,
+                                 &world_lock);
 
-                let ray = camera.get_ray(uv);
-                let color = world.shoot_ray(&ray, max_depth);
-                pixel_color += color;
+        for yoff in 0..result.height {
+            for xoff in 0..result.width {
+                let x = result.x + xoff;
+                let y = result.y + yoff;
+                let color = result.pixel_colors[xoff + yoff * result.width];
+                write_pixel_to_image(&mut image,
+                                     image_width,
+                                     image_height,
+                                     x, y,
+                                     color,
+                                     SAMPLES_PER_PIXEL)
             }
-
-            write_pixel_to_image(&mut image, image_width, image_height,
-                                 x, y,
-                                 pixel_color,
-                                 samples_per_pixel);
         }
     }
-    println!();
     */
 
+    for handle in thread_join_handles {
+        handle.join()
+            .expect("Failed to join thread");
+    }
 
-    while !job_queue.is_empty() {
-        let job = job_queue.pop_front().unwrap();
+    let lock = job_results.lock().unwrap();
+    println!("Num results: {}", lock.len());
 
-        for yoff in 0..job.height {
-            for xoff in 0..job.width {
-                let x = job.x + xoff;
-                let y = job.y + yoff;
-
-                let mut pixel_color = Vec3::new(0.0, 0.0, 0.0);
-                for sample in 0..samples_per_pixel {
-                    let u = (x as f32 + rand::random::<f32>()) / image_width as f32;
-                    let v = (y as f32 + rand::random::<f32>()) / image_height as f32;
-                    let uv = Vec2::new(u, v);
-
-                    let ray = camera.get_ray(uv);
-                    let color = world.shoot_ray(&ray, max_depth);
-                    pixel_color += color;
-                }
-
-                write_pixel_to_image(&mut image, image_width, image_height,
+    for result in lock.iter() {
+        for yoff in 0..result.height {
+            for xoff in 0..result.width {
+                let x = result.x + xoff;
+                let y = result.y + yoff;
+                let color = result.pixel_colors[xoff + yoff * result.width];
+                write_pixel_to_image(&mut image,
+                                     image_width,
+                                     image_height,
                                      x, y,
-                                     pixel_color,
-                                     samples_per_pixel);
+                                     color,
+                                     SAMPLES_PER_PIXEL)
             }
         }
     }
