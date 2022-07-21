@@ -1,3 +1,4 @@
+use std::time::Instant;
 use glam::f32::{ Vec3, Vec2 };
 
 struct Ray {
@@ -48,11 +49,11 @@ impl Camera {
     }
 }
 
-fn hit_sphere(center: Vec3, radius: f32, ray: &Ray) -> f32 {
-    let oc = ray.origin - center;
+fn hit_sphere(sphere: &Sphere, ray: &Ray) -> f32 {
+    let oc = ray.origin - sphere.position;
     let a = ray.dir.length_squared();
     let half_b = oc.dot(ray.dir);
-    let c = oc.length_squared() - radius * radius;
+    let c = oc.length_squared() - sphere.radius * sphere.radius;
     let discriminant = half_b * half_b - a * c;
 
     if discriminant < 0.0 {
@@ -62,6 +63,7 @@ fn hit_sphere(center: Vec3, radius: f32, ray: &Ray) -> f32 {
     }
 }
 
+/*
 fn ray_color(ray: &Ray) -> Vec3 {
     let t = hit_sphere(Vec3::new(0.0, 0.0, -1.0), 0.5, ray);
     if t > 0.0 {
@@ -84,6 +86,7 @@ fn ray_color(ray: &Ray) -> Vec3 {
 
     (1.0 - t) * color1 + t * color2
 }
+*/
 
 fn write_pixel_to_image(image: &mut bmp::Image,
                         image_width: usize, image_height: usize,
@@ -114,16 +117,172 @@ fn write_pixel_to_image(image: &mut bmp::Image,
                     bmp::Pixel::new(r, g, b));
 }
 
+#[derive(Default)]
+struct HitRecord {
+    point: Vec3,
+    normal: Vec3,
+    t: f32,
+
+    material_id: usize,
+}
+
+struct Material {
+    color: Vec3,
+}
+
+struct Sphere {
+    position: Vec3,
+    radius: f32,
+
+    material_id: usize,
+}
+
+impl Sphere {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32, record: &mut HitRecord)
+        -> bool
+    {
+        let oc = ray.origin - self.position;
+        let a = ray.dir.length_squared();
+        let half_b = oc.dot(ray.dir);
+        let c = oc.length_squared() - self.radius * self.radius;
+        let discriminant = half_b * half_b - a * c;
+
+        if discriminant < 0.0 {
+            return false;
+        }
+
+        let sqrtd = discriminant.sqrt();
+
+        let mut root = (-half_b - sqrtd) / a;
+        if root < t_min || t_max < root {
+            root = (-half_b + sqrtd) / a;
+
+            if root < t_min || t_max < root {
+                return false;
+            }
+        }
+
+        record.t = root;
+        record.point = ray.at(record.t);
+        record.normal = (record.point - self.position) / self.radius;
+        record.material_id = self.material_id;
+
+        true
+    }
+}
+
+struct World {
+    materials: Vec<Material>,
+    spheres: Vec<Sphere>
+}
+
+impl World {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>
+    {
+        let mut closest = t_max;
+        let mut current_record = None;
+
+        for sphere in &self.spheres {
+            let mut record = HitRecord::default();
+
+            if sphere.hit(ray, t_min, closest, &mut record) {
+                closest = record.t;
+                current_record = Some(record);
+            }
+        }
+
+        current_record
+    }
+
+    fn shoot_ray(&self, ray: &Ray, depth: usize) -> Vec3 {
+        if depth <= 0 {
+            return Vec3::new(0.0, 0.0, 0.0);
+        }
+
+        if let Some(record) = self.hit(ray, 0.001, f32::MAX) {
+            let target = record.point + record.normal + random_unit_vec3();
+            let new_ray = Ray::new(record.point, target - record.point);
+
+            let material = &self.materials[record.material_id];
+            let color = material.color * self.shoot_ray(&new_ray, depth - 1);
+
+            return color;
+        }
+
+        let dir = ray.dir.normalize();
+        let t = 0.5 * (dir.y + 1.0);
+
+        let color1 = Vec3::new(1.0, 1.0, 1.0);
+        let color2 = Vec3::new(0.5, 0.7, 1.0);
+
+        (1.0 - t) * color1 + t * color2
+    }
+}
+
+fn random_vec3() -> Vec3 {
+    let x = rand::random::<f32>() * 2.0 - 1.0;
+    let y = rand::random::<f32>() * 2.0 - 1.0;
+    let z = rand::random::<f32>() * 2.0 - 1.0;
+    Vec3::new(x, y, z)
+}
+
+fn random_vec3_in_unit_shpere() -> Vec3 {
+    loop {
+        let v = random_vec3();
+        if v.length_squared() >= 1.0 {
+            continue;
+        }
+
+        return v;
+    }
+}
+
+fn random_unit_vec3() -> Vec3 {
+    random_vec3_in_unit_shpere().normalize()
+}
+
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
     let image_width = 400;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
-    let samples_per_pixel = 100;
+    let samples_per_pixel = 30;
+    let max_depth = 4;
     let camera = Camera::new();
 
+    let mut materials = Vec::new();
+    materials.push(Material {
+        color: Vec3::new(1.0, 0.0, 1.0),
+    });
+
+    materials.push(Material {
+        color: Vec3::new(0.3, 0.8, 0.3),
+    });
+
+    let mut spheres = Vec::new();
+    spheres.push(Sphere {
+        position: Vec3::new(0.0, 0.0, -1.0),
+        radius: 0.5,
+
+        material_id: 0,
+    });
+
+    spheres.push(Sphere {
+        position: Vec3::new(0.0, -100.5, -1.0),
+        radius: 100.0,
+
+        material_id: 1,
+    });
+
+    let world = World {
+        materials,
+        spheres,
+    };
+
     let mut image = bmp::Image::new(image_width as u32, image_height as u32);
+
+    let now = Instant::now();
 
     for y in 0..image_height {
         let per = ((y as f32 / image_height as f32) * 100.0) as u32;
@@ -137,7 +296,7 @@ fn main() {
                 let uv = Vec2::new(u, v);
 
                 let ray = camera.get_ray(uv);
-                let color = ray_color(&ray);
+                let color = world.shoot_ray(&ray, max_depth);
                 pixel_color += color;
             }
 
@@ -148,6 +307,9 @@ fn main() {
         }
     }
     println!();
+
+    let elapsed_time = now.elapsed();
+    println!("Time: {:.2} s ({} ms)", elapsed_time.as_secs_f32(), elapsed_time.as_millis());
 
     image.save("result.bmp")
         .expect("Failed to save image");
