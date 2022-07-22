@@ -1,10 +1,10 @@
-use std::time::Instant;
+use std::time::{ Instant, Duration };
 use std::collections::VecDeque;
 use std::sync::{ Arc, Mutex, RwLock };
 use glam::f32::{ Vec3, Vec2 };
 
-const SAMPLES_PER_PIXEL: usize = 200;
-const MAX_DEPTH: usize = 20;
+const SAMPLES_PER_PIXEL: usize = 500;
+const MAX_DEPTH: usize = 50;
 
 struct Ray {
     origin: Vec3,
@@ -27,31 +27,55 @@ struct Camera {
     lower_left_corner: Vec3,
     horizontal: Vec3,
     vertical: Vec3,
+    u: Vec3,
+    v: Vec3,
+    w: Vec3,
+    lens_radius: f32,
 }
 
 impl Camera {
-    fn new() -> Self {
-        let aspect_ratio = 16.0 / 9.0;
-        let viewport_height = 2.0;
+    fn new(look_from: Vec3,
+           look_at: Vec3,
+           up: Vec3,
+           vfov: f32,
+           aspect_ratio: f32,
+           aperture: f32,
+           focus_dist: f32)
+        -> Self
+    {
+        let theta = vfov.to_radians();
+        let h = (theta / 2.0).tan();
+        let viewport_height = 2.0 * h;
         let viewport_width = aspect_ratio * viewport_height;
-        let focal_length = 1.0;
 
-        let origin = Vec3::new(0.0, 0.0, 0.0);
-        let horizontal = Vec3::new(viewport_width, 0.0, 0.0);
-        let vertical = Vec3::new(0.0, viewport_height, 0.0);
-        let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - Vec3::new(0.0, 0.0, focal_length);
+        let w = (look_from - look_at).normalize();
+        let u = up.cross(w).normalize();
+        let v = w.cross(u);
+
+        let origin = look_from;
+        let horizontal = focus_dist * viewport_width * u;
+        let vertical = focus_dist * viewport_height * v;
+        let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focus_dist * w;
+
+        let lens_radius = aperture / 2.0;
 
         Self {
             origin,
             lower_left_corner,
             horizontal,
-            vertical
+            vertical,
+            u,
+            v,
+            w,
+            lens_radius,
         }
     }
 
-    fn get_ray(&self, uv: Vec2) -> Ray {
-        let dir = self.lower_left_corner + uv.x * self.horizontal + uv.y * self.vertical - self.origin;
-        Ray::new(self.origin, dir)
+    fn get_ray(&self, st: Vec2) -> Ray {
+        let rd = self.lens_radius * random_in_unit_disk();
+        let offset = self.u * rd.x + self.v * rd.y;
+        let dir = self.lower_left_corner + st.x * self.horizontal + st.y * self.vertical - self.origin - offset;
+        Ray::new(self.origin + offset, dir)
     }
 }
 
@@ -147,7 +171,12 @@ impl HitRecord {
 
 struct Material {
     color: Vec3,
-    reflecting: bool,
+
+    metallic: bool,
+    metallic_strength: f32,
+
+    dielectric: bool,
+    ir: f32,
 }
 
 struct Sphere {
@@ -229,53 +258,59 @@ impl World {
         if let Some(record) = self.hit(ray, 0.001, f32::MAX) {
             let material = &self.materials[record.material_id];
 
-            // let target = record.point + random_in_hemisphere(record.normal);
-            // let new_ray = Ray::new(record.point, target - record.point);
+            let mut final_color = material.color;
 
-            // let mut final_color = material.color;
-            // final_color = Vec3::new(1.0, 1.0, 1.0);
+            if material.dielectric {
+                let ir = material.ir;
+                let refraction_ratio = if record.front_face {
+                    1.0 / ir
+                } else {
+                    ir
+                };
 
-            let ir = 1.5;
-            let refraction_ratio = if record.front_face {
-                1.0 / ir
-            } else {
-                ir
-            };
+                let d = ray.dir.normalize();
+                let cos_theta = ((-d).dot(record.normal)).min(1.0);
+                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
 
-            let d = ray.dir.normalize();
-            let cos_theta = ((-d).dot(record.normal)).min(1.0);
-            let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+                let cannot_refract = (refraction_ratio * sin_theta) > 1.0;
 
-            let cannot_refract = (refraction_ratio * sin_theta) > 1.0;
+                let dir = if cannot_refract || reflectance(cos_theta, refraction_ratio) > rand::random::<f32>() {
+                    reflect(d, record.normal)
+                } else {
+                    refract(d, record.normal, refraction_ratio)
+                };
 
-            let dir = if cannot_refract || reflectance(cos_theta, refraction_ratio) > rand::random::<f32>() {
-                reflect(d, record.normal)
-            } else {
-                refract(d, record.normal, refraction_ratio)
-            };
+                // let refracted = refract(d, record.normal, refraction_ratio);
+                let new_ray = Ray::new(record.point, dir);
 
-            // let refracted = refract(d, record.normal, refraction_ratio);
-            let new_ray = Ray::new(record.point, dir);
-
-            let final_color = if material.reflecting {
                 let attenuation = Vec3::new(1.0, 1.0, 1.0);
-                attenuation * self.shoot_ray(&new_ray, depth - 1)
-            } else {
-                material.color
-            };
-
-            // let final_color = 0.5 * record.normal + 0.5;
-
-            // NOTE(patrik): Metallic
-            /*
-            let reflected = reflect(ray.dir, record.normal);
-            let fuzz = 0.5;
-            let new_ray = Ray::new(record.point, reflected + fuzz * random_vec3_in_unit_sphere());
-
-            if material.reflecting && reflected.dot(record.normal) > 0.0 {
-                color *= self.shoot_ray(&new_ray, depth - 1);
+                final_color =
+                    attenuation * self.shoot_ray(&new_ray, depth - 1);
             }
-            */
+            else if material.metallic {
+                let reflected = reflect(ray.dir, record.normal);
+                let fuzz = 1.0 - material.metallic_strength;
+                let ray_dir = reflected + fuzz *
+                    random_in_unit_sphere_vec3();
+                let scattered_ray = Ray::new(record.point, ray_dir);
+
+                let color = if reflected.dot(record.normal) > 0.0 {
+                    let attenuation = material.color;
+                    attenuation * self.shoot_ray(&scattered_ray, depth - 1)
+                } else {
+                    Vec3::new(0.0, 0.0, 0.0)
+                };
+
+                final_color *= color;
+            } else {
+                // let target = record.point + random_in_hemisphere(record.normal);
+                // let new_ray = Ray::new(record.point, target - record.point);
+                let dir = record.normal + random_unit_vec3();
+                let new_ray = Ray::new(record.point, dir);
+
+                let diffuse = self.shoot_ray(&new_ray, depth - 1);
+                final_color *= diffuse;
+            }
 
             return final_color;
         }
@@ -297,7 +332,7 @@ fn random_vec3() -> Vec3 {
     Vec3::new(x, y, z)
 }
 
-fn random_vec3_in_unit_sphere() -> Vec3 {
+fn random_in_unit_sphere_vec3() -> Vec3 {
     loop {
         let v = random_vec3();
         if v.length_squared() >= 1.0 {
@@ -309,15 +344,28 @@ fn random_vec3_in_unit_sphere() -> Vec3 {
 }
 
 fn random_unit_vec3() -> Vec3 {
-    random_vec3_in_unit_sphere().normalize()
+    random_in_unit_sphere_vec3().normalize()
 }
 
 fn random_in_hemisphere(normal: Vec3) -> Vec3 {
-    let unit_sphere = random_vec3_in_unit_sphere();
+    let unit_sphere = random_in_unit_sphere_vec3();
     if unit_sphere.dot(normal) > 0.0 {
         return unit_sphere;
     } else {
         return -unit_sphere;
+    }
+}
+
+fn random_in_unit_disk() -> Vec3 {
+    loop {
+        let x = rand::random::<f32>() * 2.0 - 1.0;
+        let y = rand::random::<f32>() * 2.0 - 1.0;
+        let p = Vec3::new(x, y, 0.0);
+        if p.length_squared() >= 1.0 {
+            continue;
+        }
+
+        return p;
     }
 }
 
@@ -437,51 +485,152 @@ fn main() {
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
-    let camera = Camera::new();
+    let look_from = Vec3::new(13.0, 2.0, 3.0);
+    let look_at = Vec3::new(0.0, 0.0, 0.0);
+    let up = Vec3::new(0.0, 1.0, 0.0);
+    let dist_to_focus = 10.0;
+    let aperture = 0.1;
+    let camera = Camera::new(look_from,
+                             look_at,
+                             up,
+                             20.0,
+                             aspect_ratio,
+                             aperture,
+                             dist_to_focus);
 
     let mut materials = Vec::new();
-    materials.push(Material {
-        color: Vec3::new(1.0, 0.0, 1.0),
-        reflecting: true,
-    });
-
-    materials.push(Material {
-        color: Vec3::new(0.1, 0.1, 0.6),
-        reflecting: false,
-    });
-
-    materials.push(Material {
-        color: Vec3::new(0.3, 0.8, 0.3),
-        reflecting: false,
-    });
-
     let mut spheres = Vec::new();
-    spheres.push(Sphere {
-        position: Vec3::new(-1.0, 0.0, -1.0),
-        radius: 0.5,
 
-        material_id: 0,
+    let mut submit_material = |material: Material| -> usize {
+        let id = materials.len();
+        materials.push(material);
+
+        id
+    };
+
+    for a in -11..11 {
+        for b in -11..11 {
+            let a = a as f32;
+            let b = b as f32;
+
+            let x = a + 0.9 + rand::random::<f32>();
+            let y = 0.2;
+            let z = b + 0.9 * rand::random::<f32>();
+            let position = Vec3::new(x, y, z);
+
+            let choose_mat = rand::random::<f32>();
+
+            let material = if choose_mat < 0.8 {
+                let color = random_vec3() * 0.9;
+                submit_material(Material {
+                    color,
+                    metallic: false,
+                    metallic_strength: 0.0,
+
+                    dielectric: false,
+                    ir: 0.0,
+                })
+            } else if choose_mat < 0.95 {
+                let color = random_vec3();
+                let strength = rand::random::<f32>();
+                submit_material(Material {
+                    color,
+                    metallic: true,
+                    metallic_strength: strength,
+
+                    dielectric: false,
+                    ir: 0.0,
+                })
+            } else {
+                submit_material(Material {
+                    color: Vec3::new(1.0, 1.0, 1.0),
+                    metallic: false,
+                    metallic_strength: 0.0,
+
+                    dielectric: true,
+                    ir: 1.5,
+                })
+            };
+
+            spheres.push(Sphere {
+                position,
+                radius: 0.2,
+
+                material_id: material,
+            });
+        }
+    }
+
+    // NOTE(patrik): Ground
+    let ground_material = submit_material(Material {
+        color: Vec3::new(0.5, 0.5, 0.5),
+        metallic: false,
+        metallic_strength: 0.0,
+
+        dielectric: false,
+        ir: 0.0,
     });
 
     spheres.push(Sphere {
-        position: Vec3::new(-1.0, 0.0, -1.0),
-        radius: -0.4,
+        position: Vec3::new(0.0, -1000.0, 0.0),
+        radius: 1000.0,
 
-        material_id: 0,
+        material_id: ground_material,
+    });
+
+    // NOTE(patrik): Sphere 1
+
+    let material = submit_material(Material {
+        color: Vec3::new(0.1, 0.1, 0.6),
+        metallic: false,
+        metallic_strength: 0.0,
+
+        dielectric: true,
+        ir: 1.5,
     });
 
     spheres.push(Sphere {
-        position: Vec3::new(1.0, 0.0, -1.0),
-        radius: 0.5,
+        position: Vec3::new(0.0, 1.0, 0.0),
+        radius: 1.0,
 
-        material_id: 1,
+        material_id: material,
+    });
+
+    // NOTE(patrik): Sphere 2
+
+    let material = submit_material(Material {
+        color: Vec3::new(0.1, 0.1, 0.6),
+        metallic: false,
+        metallic_strength: 0.0,
+
+        dielectric: false,
+        ir: 0.0,
     });
 
     spheres.push(Sphere {
-        position: Vec3::new(0.0, -100.5, -1.0),
-        radius: 100.0,
+        position: Vec3::new(-4.0, 1.0, 0.0),
+        radius: 1.0,
 
-        material_id: 2,
+        material_id: material,
+    });
+
+    // NOTE(patrik): Sphere 3
+
+    let material = submit_material(Material {
+        color: Vec3::new(0.7, 0.6, 0.5),
+
+        metallic: true,
+        metallic_strength: 1.0,
+
+        dielectric: false,
+        ir: 0.0,
+    });
+
+    spheres.push(Sphere {
+        position: Vec3::new(4.0, 1.0, 0.0),
+        radius: 1.0,
+
+        material_id: material,
     });
 
     let world = World {
@@ -562,6 +711,9 @@ fn main() {
             height: th,
         });
     }
+
+    let num_jobs = job_queue.len();
+    println!("Num Jobs: {}", num_jobs);
 
     /*
     while !job_queue.is_empty() {
@@ -661,6 +813,26 @@ fn main() {
     }
     */
 
+    loop {
+        let current_finished_jobs = {
+            let lock = job_results.lock().unwrap();
+            lock.len()
+        };
+
+        let per = current_finished_jobs as f32 / num_jobs as f32;
+        print!("\rFinished Jobs: {:.2}", per * 100.0);
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+
+        if current_finished_jobs >= num_jobs {
+            break;
+        }
+
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    println!();
+
     for handle in thread_join_handles {
         handle.join()
             .expect("Failed to join thread");
@@ -686,7 +858,8 @@ fn main() {
     }
 
     let elapsed_time = now.elapsed();
-    println!("Time: {:.2} s ({} ms)", elapsed_time.as_secs_f32(), elapsed_time.as_millis());
+    println!("Time: {:.2} s ({} ms)",
+             elapsed_time.as_secs_f32(), elapsed_time.as_millis());
 
     image.save("result.bmp")
         .expect("Failed to save image");
