@@ -1,10 +1,10 @@
 use std::time::{ Instant, Duration };
 use std::collections::VecDeque;
 use std::sync::{ Arc, Mutex, RwLock };
-use glam::f32::{ Vec3, Vec2 };
+use glam::f32::{ Vec2, Vec3, Vec4, Mat4 };
 
-const SAMPLES_PER_PIXEL: usize = 500;
-const MAX_DEPTH: usize = 50;
+const SAMPLES_PER_PIXEL: usize = 50;
+const MAX_DEPTH: usize = 4;
 
 struct Ray {
     origin: Vec3,
@@ -23,59 +23,38 @@ impl Ray {
 
 #[derive(Clone)]
 struct Camera {
-    origin: Vec3,
-    lower_left_corner: Vec3,
-    horizontal: Vec3,
-    vertical: Vec3,
-    u: Vec3,
-    v: Vec3,
-    w: Vec3,
-    lens_radius: f32,
+    view_matrix_inv: Mat4,
+    projection_matrix_inv: Mat4,
 }
 
 impl Camera {
-    fn new(look_from: Vec3,
-           look_at: Vec3,
-           up: Vec3,
-           vfov: f32,
-           aspect_ratio: f32,
-           aperture: f32,
-           focus_dist: f32)
-        -> Self
-    {
-        let theta = vfov.to_radians();
-        let h = (theta / 2.0).tan();
-        let viewport_height = 2.0 * h;
-        let viewport_width = aspect_ratio * viewport_height;
-
-        let w = (look_from - look_at).normalize();
-        let u = up.cross(w).normalize();
-        let v = w.cross(u);
-
-        let origin = look_from;
-        let horizontal = focus_dist * viewport_width * u;
-        let vertical = focus_dist * viewport_height * v;
-        let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focus_dist * w;
-
-        let lens_radius = aperture / 2.0;
+    fn new(position: Vec3, look_at: Vec3, fov: f32, aspect_ratio: f32) -> Self {
+        let view_matrix =
+            Mat4::look_at_rh(position, look_at, Vec3::new(0.0, 1.0, 0.0));
+        let proj_matrix =
+            Mat4::perspective_rh(fov.to_radians(), aspect_ratio, 0.1, 100.0);
 
         Self {
-            origin,
-            lower_left_corner,
-            horizontal,
-            vertical,
-            u,
-            v,
-            w,
-            lens_radius,
+            view_matrix_inv: view_matrix.inverse(),
+            projection_matrix_inv: proj_matrix.inverse(),
         }
     }
 
-    fn get_ray(&self, st: Vec2) -> Ray {
-        let rd = self.lens_radius * random_in_unit_disk();
-        let offset = self.u * rd.x + self.v * rd.y;
-        let dir = self.lower_left_corner + st.x * self.horizontal + st.y * self.vertical - self.origin - offset;
-        Ray::new(self.origin + offset, dir)
+    fn get_ray(&self, uv: Vec2) -> Ray {
+        let origin = self.view_matrix_inv * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let origin = origin.truncate();
+
+        let direction =
+            self.projection_matrix_inv * Vec4::from((uv, 0.0, 1.0));
+        let direction = direction.truncate();
+        let direction =
+            self.view_matrix_inv * Vec4::from((direction, 0.0));
+        let direction = direction.truncate();
+
+        let ray_origin = origin;
+        let ray_dir = direction.normalize();
+
+        Ray::new(ray_origin, ray_dir)
     }
 }
 
@@ -419,6 +398,8 @@ fn execute_job(job: &TileJob,
             for _sample in 0..SAMPLES_PER_PIXEL {
                 let u = (x as f32 + rand::random::<f32>()) / image_width as f32;
                 let v = (y as f32 + rand::random::<f32>()) / image_height as f32;
+                let u = u * 2.0 - 1.0;
+                let v = v * 2.0 - 1.0;
                 let uv = Vec2::new(u, v);
 
                 let ray = camera.get_ray(uv);
@@ -479,25 +460,7 @@ fn worker(data: WorkerData)
     }
 }
 
-fn main() {
-    let aspect_ratio = 16.0 / 9.0;
-    let image_width = 800;
-    let image_height = (image_width as f32 / aspect_ratio) as usize;
-    println!("Width: {} Height: {}", image_width, image_height);
-
-    let look_from = Vec3::new(13.0, 2.0, 3.0);
-    let look_at = Vec3::new(0.0, 0.0, 0.0);
-    let up = Vec3::new(0.0, 1.0, 0.0);
-    let dist_to_focus = 10.0;
-    let aperture = 0.1;
-    let camera = Camera::new(look_from,
-                             look_at,
-                             up,
-                             20.0,
-                             aspect_ratio,
-                             aperture,
-                             dist_to_focus);
-
+fn create_random_world() -> World {
     let mut materials = Vec::new();
     let mut spheres = Vec::new();
 
@@ -620,7 +583,7 @@ fn main() {
         color: Vec3::new(0.7, 0.6, 0.5),
 
         metallic: true,
-        metallic_strength: 1.0,
+        metallic_strength: 0.1,
 
         dielectric: false,
         ir: 0.0,
@@ -633,11 +596,78 @@ fn main() {
         material_id: material,
     });
 
-    let world = World {
+    World {
         materials,
         spheres,
+    }
+}
+
+fn create_simple_world() -> World {
+    let mut materials = Vec::new();
+    let mut spheres = Vec::new();
+
+    let mut submit_material = |material: Material| -> usize {
+        let id = materials.len();
+        materials.push(material);
+
+        id
     };
 
+    // NOTE(patrik): Ground
+    let ground_material = submit_material(Material {
+        color: Vec3::new(0.5, 0.5, 0.5),
+        metallic: false,
+        metallic_strength: 0.0,
+
+        dielectric: false,
+        ir: 0.0,
+    });
+
+    spheres.push(Sphere {
+        position: Vec3::new(0.0, -1000.0, 0.0),
+        radius: 1000.0,
+
+        material_id: ground_material,
+    });
+
+    // NOTE(patrik): Sphere 3
+
+    let material = submit_material(Material {
+        color: Vec3::new(0.7, 0.6, 0.5),
+
+        metallic: true,
+        metallic_strength: 0.1,
+
+        dielectric: false,
+        ir: 0.0,
+    });
+
+    spheres.push(Sphere {
+        position: Vec3::new(4.0, 1.0, 0.0),
+        radius: 1.0,
+
+        material_id: material,
+    });
+
+    World {
+        materials,
+        spheres,
+    }
+}
+
+fn main() {
+    let aspect_ratio = 16.0 / 9.0;
+    let image_width = 400;
+    let image_height = (image_width as f32 / aspect_ratio) as usize;
+    println!("Width: {} Height: {}", image_width, image_height);
+
+    let position = Vec3::new(13.0, 2.0, 3.0);
+    let look_at = Vec3::new(0.0, 0.0, 0.0);
+    let fov = 20.0;
+    let camera = Camera::new(position, look_at, fov, aspect_ratio);
+
+    let world = create_random_world();
+    // let world = create_simple_world();
     let mut image = bmp::Image::new(image_width as u32, image_height as u32);
 
     let mut job_queue = VecDeque::new();
@@ -713,7 +743,6 @@ fn main() {
     }
 
     let num_jobs = job_queue.len();
-    println!("Num Jobs: {}", num_jobs);
 
     /*
     while !job_queue.is_empty() {
@@ -745,6 +774,7 @@ fn main() {
     //   Send the result
 
     let job_queue = Arc::new(Mutex::new(job_queue));
+    /*
     let job_results = Arc::new(Mutex::new(Vec::new()));
 
     let world = Arc::new(RwLock::new(world));
@@ -782,20 +812,19 @@ fn main() {
 
         thread_join_handles.push(join_handle);
     }
+    */
 
     let now = Instant::now();
 
-    /*
     let mut lock = job_queue.lock().unwrap();
     while !lock.is_empty() {
         let job = lock.pop_front().unwrap();
 
-        let world_lock = world.read().unwrap();
         let result = execute_job(&job,
                                  image_width,
                                  image_height,
                                  &camera,
-                                 &world_lock);
+                                 &world);
 
         for yoff in 0..result.height {
             for xoff in 0..result.width {
@@ -811,8 +840,8 @@ fn main() {
             }
         }
     }
-    */
 
+    /*
     loop {
         let current_finished_jobs = {
             let lock = job_results.lock().unwrap();
@@ -839,7 +868,6 @@ fn main() {
     }
 
     let lock = job_results.lock().unwrap();
-    println!("Num results: {}", lock.len());
 
     for result in lock.iter() {
         for yoff in 0..result.height {
@@ -856,6 +884,7 @@ fn main() {
             }
         }
     }
+    */
 
     let elapsed_time = now.elapsed();
     println!("Time: {:.2} s ({} ms)",
