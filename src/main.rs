@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::sync::{ Arc, Mutex, RwLock };
 use glam::f32::{ Vec2, Vec3, Vec4, Mat4 };
 
-const SAMPLES_PER_PIXEL: usize = 50;
+const SAMPLES_PER_PIXEL: usize = 500;
 const MAX_DEPTH: usize = 4;
 
 struct Ray {
@@ -212,8 +212,7 @@ struct World {
 }
 
 impl World {
-    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>
-    {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let mut closest = t_max;
         let mut current_record = None;
 
@@ -471,12 +470,12 @@ fn create_random_world() -> World {
         id
     };
 
-    for a in -11..11 {
-        for b in -11..11 {
+    for a in -4..4 {
+        for b in -4..4 {
             let a = a as f32;
             let b = b as f32;
 
-            let x = a + 0.9 + rand::random::<f32>();
+            let x = a + 0.9 * rand::random::<f32>();
             let y = 0.2;
             let z = b + 0.9 * rand::random::<f32>();
             let position = Vec3::new(x, y, z);
@@ -655,25 +654,13 @@ fn create_simple_world() -> World {
     }
 }
 
-fn main() {
-    let aspect_ratio = 16.0 / 9.0;
-    let image_width = 400;
-    let image_height = (image_width as f32 / aspect_ratio) as usize;
-    println!("Width: {} Height: {}", image_width, image_height);
-
-    let position = Vec3::new(13.0, 2.0, 3.0);
-    let look_at = Vec3::new(0.0, 0.0, 0.0);
-    let fov = 20.0;
-    let camera = Camera::new(position, look_at, fov, aspect_ratio);
-
-    let world = create_random_world();
-    // let world = create_simple_world();
-    let mut image = bmp::Image::new(image_width as u32, image_height as u32);
-
+fn create_job_queue(image_width: usize,
+                    image_height: usize,
+                    tile_width: usize,
+                    tile_height: usize)
+    -> VecDeque<TileJob>
+{
     let mut job_queue = VecDeque::new();
-
-    let tile_width = 64;
-    let tile_height = 64;
 
     for tile_y in 0..(image_height / tile_height) {
         for tile_x in 0..(image_width / tile_width) {
@@ -742,9 +729,10 @@ fn main() {
         });
     }
 
-    let num_jobs = job_queue.len();
+    job_queue
+}
 
-    /*
+fn debug_job_queue(image: &mut bmp::Image, mut job_queue: VecDeque<TileJob>) {
     while !job_queue.is_empty() {
         let job = job_queue.pop_front().unwrap();
 
@@ -766,6 +754,33 @@ fn main() {
             }
         }
     }
+}
+
+fn main() {
+    let aspect_ratio = 16.0 / 9.0;
+    let image_width = 400;
+    let image_height = (image_width as f32 / aspect_ratio) as usize;
+    println!("Width: {} Height: {}", image_width, image_height);
+
+    let position = Vec3::new(13.0, 2.0, 3.0);
+    let look_at = Vec3::new(0.0, 0.0, 0.0);
+    let fov = 20.0;
+    let camera = Camera::new(position, look_at, fov, aspect_ratio);
+
+    let world = create_random_world();
+    // let world = create_simple_world();
+    let mut image = bmp::Image::new(image_width as u32, image_height as u32);
+
+    let tile_width = 64;
+    let tile_height = 64;
+
+    let job_queue = create_job_queue(image_width, image_height,
+                                     tile_width, tile_height);
+    let num_jobs = job_queue.len();
+
+    // debug_job_queue(&mut image, job_queue);
+
+    /*
     */
 
     // Thread:
@@ -774,7 +789,6 @@ fn main() {
     //   Send the result
 
     let job_queue = Arc::new(Mutex::new(job_queue));
-    /*
     let job_results = Arc::new(Mutex::new(Vec::new()));
 
     let world = Arc::new(RwLock::new(world));
@@ -812,10 +826,10 @@ fn main() {
 
         thread_join_handles.push(join_handle);
     }
-    */
 
     let now = Instant::now();
 
+    /*
     let mut lock = job_queue.lock().unwrap();
     while !lock.is_empty() {
         let job = lock.pop_front().unwrap();
@@ -840,8 +854,8 @@ fn main() {
             }
         }
     }
+    */
 
-    /*
     loop {
         let current_finished_jobs = {
             let lock = job_results.lock().unwrap();
@@ -884,7 +898,6 @@ fn main() {
             }
         }
     }
-    */
 
     let elapsed_time = now.elapsed();
     println!("Time: {:.2} s ({} ms)",
