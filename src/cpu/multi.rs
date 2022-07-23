@@ -14,8 +14,6 @@ type JobQueue = Arc<Mutex<VecDeque<TileJob>>>;
 type JobResults = Arc<Mutex<Vec<JobResult>>>;
 
 struct WorkerData {
-    thread_id: usize,
-
     image_width: usize,
     image_height: usize,
 
@@ -75,10 +73,8 @@ fn dispatch_threads(image_width: usize,
 {
     let num_threads = 8;
     let mut thread_join_handles = Vec::with_capacity(num_threads);
-    for thread_id in 0..num_threads {
+    for _thread_id in 0..num_threads {
         let data = WorkerData {
-            thread_id,
-
             image_width,
             image_height,
 

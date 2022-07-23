@@ -1,15 +1,13 @@
 use std::time::Instant;
-use std::collections::VecDeque;
+
+use glam::f32::Vec3;
 
 use super::compose_final_framebuffer;
 use super::execute_job;
 use super::Dispatch;
-use super::job::{ TileJob, JobData };
-use crate::{ World, Camera };
-use glam::f32::Vec3;
+use super::job::JobData;
 
-pub fn dispatch_work_cpu_singlethreaded(dispatch: Dispatch) -> Vec<Vec3>
-{
+pub fn dispatch_work_cpu_singlethreaded(dispatch: Dispatch) -> Vec<Vec3> {
     let now = Instant::now();
 
     let mut job_queue = dispatch.job_queue;

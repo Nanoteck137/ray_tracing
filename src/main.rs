@@ -44,86 +44,16 @@ impl Camera {
         let origin = self.view_matrix_inv * Vec4::new(0.0, 0.0, 0.0, 1.0);
         let origin = origin.truncate();
 
-        let direction =
-            self.projection_matrix_inv * Vec4::from((uv, 0.0, 1.0));
-        let direction = direction.truncate();
-        let direction =
-            self.view_matrix_inv * Vec4::from((direction, 0.0));
-        let direction = direction.truncate();
+        let dir = self.projection_matrix_inv * Vec4::from((uv, 0.0, 1.0));
+        let dir = dir.truncate();
 
-        let ray_origin = origin;
-        let ray_dir = direction.normalize();
+        let dir = self.view_matrix_inv * Vec4::from((dir, 0.0));
+        let dir = dir.truncate();
 
-        Ray::new(ray_origin, ray_dir)
+        let dir = dir.normalize();
+
+        Ray::new(origin, dir)
     }
-}
-
-fn hit_sphere(sphere: &Sphere, ray: &Ray) -> f32 {
-    let oc = ray.origin - sphere.position;
-    let a = ray.dir.length_squared();
-    let half_b = oc.dot(ray.dir);
-    let c = oc.length_squared() - sphere.radius * sphere.radius;
-    let discriminant = half_b * half_b - a * c;
-
-    if discriminant < 0.0 {
-        return -1.0;
-    } else {
-        return (-half_b - discriminant.sqrt()) / a;
-    }
-}
-
-/*
-fn ray_color(ray: &Ray) -> Vec3 {
-    let t = hit_sphere(Vec3::new(0.0, 0.0, -1.0), 0.5, ray);
-    if t > 0.0 {
-        let normal = (ray.at(t) - Vec3::new(0.0, 0.0, -1.0)).normalize();
-        return 0.5 * (normal + 1.0);
-    }
-
-    let t = hit_sphere(Vec3::new(0.0, -100.5, -1.0), 100.0, ray);
-    if t > 0.0 {
-        let normal = (ray.at(t) - Vec3::new(0.0, 0.0, -1.0)).normalize();
-        return 0.5 * (normal + 1.0);
-    }
-
-
-    let dir = ray.dir.normalize();
-    let t = 0.5 * (dir.y + 1.0);
-
-    let color1 = Vec3::new(1.0, 1.0, 1.0);
-    let color2 = Vec3::new(0.5, 0.7, 1.0);
-
-    (1.0 - t) * color1 + t * color2
-}
-*/
-
-fn write_pixel_to_image(image: &mut bmp::Image,
-                        image_width: usize, image_height: usize,
-                        x: usize, y: usize,
-                        color: Vec3,
-                        samples_per_pixel: usize)
-{
-
-    let r = color.x;
-    let g = color.y;
-    let b = color.z;
-
-    let scale = 1.0 / samples_per_pixel as f32;
-
-    let r = (r * scale).sqrt();
-    let g = (g * scale).sqrt();
-    let b = (b * scale).sqrt();
-
-    let r = r.clamp(0.0, 0.999);
-    let g = g.clamp(0.0, 0.999);
-    let b = b.clamp(0.0, 0.999);
-
-    let r = (r * 255.0) as u8;
-    let g = (g * 255.0) as u8;
-    let b = (b * 255.0) as u8;
-
-    image.set_pixel(x as u32, (image_height - y - 1) as u32,
-                    bmp::Pixel::new(r, g, b));
 }
 
 #[derive(Default)]
@@ -325,6 +255,7 @@ fn random_unit_vec3() -> Vec3 {
     random_in_unit_sphere_vec3().normalize()
 }
 
+#[allow(dead_code)]
 fn random_in_hemisphere(normal: Vec3) -> Vec3 {
     let unit_sphere = random_in_unit_sphere_vec3();
     if unit_sphere.dot(normal) > 0.0 {
@@ -334,6 +265,7 @@ fn random_in_hemisphere(normal: Vec3) -> Vec3 {
     }
 }
 
+#[allow(dead_code)]
 fn random_in_unit_disk() -> Vec3 {
     loop {
         let x = rand::random::<f32>() * 2.0 - 1.0;
@@ -602,12 +534,11 @@ fn main() {
 
     let job_queue = cpu::create_job_queue(image_width, image_height,
                                           tile_width, tile_height);
-    let num_jobs = job_queue.len();
 
-    let framebuffer = cpu::debug_write_job_queue_to_framebuffer(
-        image_width,
-        image_height,
-        &job_queue);
+    let framebuffer =
+        cpu::debug_write_job_queue_to_framebuffer(image_width,
+                                                  image_height,
+                                                  &job_queue);
     write_framebuffer_to_image("debug_tiles.bmp",
                                image_width,
                                image_height,

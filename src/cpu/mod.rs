@@ -1,8 +1,6 @@
-use std::time::{ Instant, Duration };
 use std::collections::VecDeque;
-use std::sync::{ Arc, Mutex, RwLock };
 
-use glam::f32::{ Vec3, Vec2 };
+use glam::f32::Vec3;
 
 use crate::{ World, Camera };
 
@@ -12,7 +10,7 @@ mod multi;
 
 pub use job::{ create_job_queue, debug_write_job_queue_to_framebuffer };
 
-use job::{ TileJob, JobData, JobResult };
+use job::{ TileJob, JobResult };
 use job::execute_job;
 
 pub use single::dispatch_work_cpu_singlethreaded;
