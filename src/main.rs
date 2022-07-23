@@ -614,7 +614,6 @@ fn main() {
                                &framebuffer);
 
 
-    /*
     let framebuffer =
         cpu::dispatch_work_cpu_singlethreaded(job_queue,
                                               image_width,
@@ -628,8 +627,8 @@ fn main() {
                                image_width,
                                image_height,
                                &framebuffer);
-    */
 
+    /*
     let framebuffer =
         cpu::dispatch_work_cpu_multithreaded(job_queue,
                                              image_width,
@@ -643,6 +642,7 @@ fn main() {
                                image_width,
                                image_height,
                                &framebuffer);
+    */
 
         // let framebuffer = dispatch_work_cpu_singlethreaded();
         // let framebuffer = dispatch_work_cpu_multithreaded();
