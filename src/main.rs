@@ -450,7 +450,7 @@ fn create_random_world() -> World {
         metallic_strength: 0.0,
 
         dielectric: true,
-        ir: 1.5,
+        ir: 1.4,
     });
 
     spheres.push(Sphere {
@@ -484,7 +484,7 @@ fn create_random_world() -> World {
         color: Vec3::new(0.7, 0.6, 0.5),
 
         metallic: true,
-        metallic_strength: 0.1,
+        metallic_strength: 1.0,
 
         dielectric: false,
         ir: 0.0,
@@ -585,7 +585,7 @@ fn write_framebuffer_to_image<P>(path: P,
 
 fn main() {
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 400;
+    let image_width = 1200;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
@@ -613,36 +613,27 @@ fn main() {
                                image_height,
                                &framebuffer);
 
+    let dispatch = cpu::Dispatch::new(job_queue,
+                                      image_width, image_height,
+                                      MAX_DEPTH, SAMPLES_PER_PIXEL,
+                                      camera, world);
 
-    let framebuffer =
-        cpu::dispatch_work_cpu_singlethreaded(job_queue,
-                                              image_width,
-                                              image_height,
-                                              MAX_DEPTH,
-                                              SAMPLES_PER_PIXEL,
-                                              camera,
-                                              world);
-
-    write_framebuffer_to_image("result.bmp",
-                               image_width,
-                               image_height,
-                               &framebuffer);
 
     /*
-    let framebuffer =
-        cpu::dispatch_work_cpu_multithreaded(job_queue,
-                                             image_width,
-                                             image_height,
-                                             MAX_DEPTH,
-                                             SAMPLES_PER_PIXEL,
-                                             camera,
-                                             world);
+    let framebuffer = cpu::dispatch_work_cpu_singlethreaded(dispatch);
 
     write_framebuffer_to_image("result.bmp",
                                image_width,
                                image_height,
                                &framebuffer);
-    */
+                               */
+
+    let framebuffer = cpu::dispatch_work_cpu_multithreaded(dispatch);
+
+    write_framebuffer_to_image("result.bmp",
+                               image_width,
+                               image_height,
+                               &framebuffer);
 
         // let framebuffer = dispatch_work_cpu_singlethreaded();
         // let framebuffer = dispatch_work_cpu_multithreaded();
