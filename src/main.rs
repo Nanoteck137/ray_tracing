@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::Path;
 use glam::f32::{ Vec2, Vec3, Vec4, Mat4 };
 
@@ -549,6 +551,7 @@ fn print_adapter(adapter: &wgpu::Adapter) {
     println!("{} ({}): {}", backend, typ, info.name);
 }
 
+#[allow(dead_code)]
 struct GpuContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -733,7 +736,7 @@ async fn test_compute(context: &GpuContext,
     queue.submit([encoder.finish()]);
 
     let buffer_slice = staging_buffer.slice(..);
-    buffer_slice.map_async(wgpu::MapMode::Read, move |v| {});
+    buffer_slice.map_async(wgpu::MapMode::Read, move |_v| {});
 
     device.poll(wgpu::Maintain::Wait);
 
@@ -749,10 +752,10 @@ async fn test_compute(context: &GpuContext,
 
     let mut new_pixels: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); image_width * image_height];
     for i in 0..(image_width * image_height) {
-        let r = pixels[i * 4 + 0] as f32 / 256.0;
-        let g = pixels[i * 4 + 1] as f32 / 256.0;
-        let b = pixels[i * 4 + 2] as f32 / 256.0;
-        let a = pixels[i * 4 + 3] as f32 / 256.0;
+        let r = pixels[i * 4 + 0] as f32 / 255.0;
+        let g = pixels[i * 4 + 1] as f32 / 255.0;
+        let b = pixels[i * 4 + 2] as f32 / 255.0;
+        let _a = pixels[i * 4 + 3] as f32 / 255.0;
 
         let pixel = Vec3::new(r, g, b);
         new_pixels[i] = pixel;
@@ -780,7 +783,7 @@ fn hit_sphere(ray: &Ray, position: Vec3, radius: f32) -> bool {
 }
 
 fn shoot_ray(ray: &Ray) -> Vec3 {
-    if(hit_sphere(ray, Vec3::new(0.0, 0.0, -10.0), 1.0)) {
+    if hit_sphere(ray, Vec3::new(0.0, 0.0, -10.0), 1.0) {
         return Vec3::new(1.0, 0.0, 0.0);
     }
 
@@ -810,42 +813,10 @@ fn main() {
     let fov = 20.0;
     let camera = Camera::new(position, look_at, fov, aspect_ratio);
 
-    let mut compiler = shaderc::Compiler::new().unwrap();
-    let mut options = shaderc::CompileOptions::new().unwrap();
-    options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_0 as u32);
-
-    let source = include_str!("test.comp.glsl");
-    let result = compiler.compile_into_spirv(source,
-                                             shaderc::ShaderKind::Compute,
-                                             "test.comp",
-                                             "main",
-                                             None);
-
-    let result = result.unwrap();
-    let binary = result.as_binary_u8();
+    let shader_binary = include_bytes!(env!("test.comp.spv"));
 
     let context = initialize_wgpu().block_on();
-    let framebuffer = test_compute(&context, binary, &camera).block_on();
-
-    let mut framebuffer = vec![Vec3::new(0.0, 0.0, 0.0); image_width * image_height];
-    for y in 0..image_height {
-        for x in 0..image_width {
-            let u = x as f32 / image_width as f32;
-            let v = y as f32 / image_height as f32;
-            let u = u * 2.0 - 1.0;
-            let v = v * 2.0 - 1.0;
-
-            let ray = camera.get_ray(Vec2::new(u, v));
-            let color = shoot_ray(&ray);
-
-            framebuffer[x + y * image_width] = color;
-        }
-    }
-
-    write_framebuffer_to_image("test_cpu.bmp",
-                               image_width,
-                               image_height,
-                               &framebuffer);
+    let framebuffer = test_compute(&context, shader_binary, &camera).block_on();
 
     return;
 

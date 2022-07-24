@@ -9,6 +9,8 @@ layout(set = 0, binding = 1) uniform Data {
     mat4 projection_matrix_inv;
 };
 
+// #include <wooh.h>
+
 struct Ray {
     vec3 origin;
     vec3 dir;
@@ -33,7 +35,6 @@ bool hitSphere(Ray ray, vec3 position, float radius) {
 }
 
 vec3 shootRay(Ray ray) {
-
     if(hitSphere(ray, vec3(0.0, 0.0, -10.0), 1.0)) {
         return vec3(1.0, 0.0, 0.0);
     }
