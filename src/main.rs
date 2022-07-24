@@ -796,6 +796,11 @@ fn shoot_ray(ray: &Ray) -> Vec3 {
     return (1.0 - t) * color1 + t * color2;
 }
 
+fn compile_shader<P>(path: P)
+    where P: AsRef<Path>
+{
+}
+
 fn main() {
     use pollster::FutureExt;
 
@@ -813,8 +818,28 @@ fn main() {
     let fov = 20.0;
     let camera = Camera::new(position, look_at, fov, aspect_ratio);
 
-    let shader_binary = include_bytes!(env!("test.comp.spv"));
+    let mut compiler = shaderc::Compiler::new().unwrap();
+    let mut options = shaderc::CompileOptions::new().unwrap();
+    options.set_include_callback(
+        |a: &str, include_type: shaderc::IncludeType, b: &str, depth: usize| {
+            panic!("B: {:?}", include_type);
 
+            Err("Hehe".to_string())
+        }
+    );
+
+    options.set_target_env(shaderc::TargetEnv::Vulkan,
+                           shaderc::EnvVersion::Vulkan1_0 as u32);
+
+    let source = include_str!("test.comp.glsl");
+    let result = compiler.compile_into_spirv(&source,
+                                             shaderc::ShaderKind::Compute,
+                                             "test.comp.glsl",
+                                             "main",
+                                             Some(&options))
+        .expect("Failed to build shader");
+
+    let shader_binary = result.as_binary_u8();
     let context = initialize_wgpu().block_on();
     let framebuffer = test_compute(&context, shader_binary, &camera).block_on();
 

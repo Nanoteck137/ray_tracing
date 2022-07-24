@@ -36,7 +36,7 @@ bool hitSphere(Ray ray, vec3 position, float radius) {
 
 vec3 shootRay(Ray ray) {
     if(hitSphere(ray, vec3(0.0, 0.0, -10.0), 1.0)) {
-        return vec3(1.0, 0.0, 0.0);
+        return vec3(1.0, 0.4, 0.4);
     }
 
     vec3 dir = normalize(ray.dir);
