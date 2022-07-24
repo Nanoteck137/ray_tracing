@@ -3,6 +3,7 @@ use glam::f32::{ Vec3, Vec2 };
 
 use crate::{ World, Camera };
 
+#[derive(Clone)]
 pub struct TileJob {
     pub x: usize,
     pub y: usize,

@@ -61,7 +61,8 @@ fn worker(data: WorkerData) {
     }
 }
 
-fn dispatch_threads(image_width: usize,
+fn dispatch_threads(num_threads: usize,
+                    image_width: usize,
                     image_height: usize,
                     max_depth: usize,
                     samples_per_pixel: usize,
@@ -71,7 +72,6 @@ fn dispatch_threads(image_width: usize,
                     job_results: &JobResults)
     -> Vec<JoinHandle<()>>
 {
-    let num_threads = 8;
     let mut thread_join_handles = Vec::with_capacity(num_threads);
     for _thread_id in 0..num_threads {
         let data = WorkerData {
@@ -128,7 +128,9 @@ fn wait_for_threads(thread_join_handles: Vec<JoinHandle<()>>,
     }
 }
 
-pub fn dispatch_work_cpu_multithreaded(dispatch: Dispatch) -> Vec<Vec3> {
+pub fn dispatch_work_cpu_multithreaded(dispatch: Dispatch, num_threads: usize)
+    -> Vec<Vec3>
+{
     // dispatch threads
     // wait for threads to finish
     // compose the final framebuffer
@@ -144,7 +146,8 @@ pub fn dispatch_work_cpu_multithreaded(dispatch: Dispatch) -> Vec<Vec3> {
     let now = Instant::now();
 
     let thread_handles =
-        dispatch_threads(dispatch.image_width,
+        dispatch_threads(num_threads,
+                         dispatch.image_width,
                          dispatch.image_height,
                          dispatch.max_depth,
                          dispatch.samples_per_pixel,

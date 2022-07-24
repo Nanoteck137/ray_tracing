@@ -1,7 +1,7 @@
 use std::path::Path;
 use glam::f32::{ Vec2, Vec3, Vec4, Mat4 };
 
-const SAMPLES_PER_PIXEL: usize = 500;
+const SAMPLES_PER_PIXEL: usize = 100;
 const MAX_DEPTH: usize = 4;
 
 mod cpu;
@@ -78,6 +78,7 @@ impl HitRecord {
     }
 }
 
+#[derive(Clone)]
 struct Material {
     color: Vec3,
 
@@ -88,6 +89,7 @@ struct Material {
     ir: f32,
 }
 
+#[derive(Clone)]
 struct Sphere {
     position: Vec3,
     radius: f32,
@@ -136,6 +138,7 @@ fn reflectance(cosine: f32, ref_index: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cosine).powf(5.0)
 }
 
+#[derive(Clone)]
 pub struct World {
     materials: Vec<Material>,
     spheres: Vec<Sphere>
@@ -521,6 +524,8 @@ fn main() {
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
+    println!("Available Cores: {}", num_cpus::get());
+
     let position = Vec3::new(13.0, 2.0, 3.0);
     let look_at = Vec3::new(0.0, 0.0, 0.0);
     let fov = 20.0;
@@ -535,6 +540,7 @@ fn main() {
     let job_queue = cpu::create_job_queue(image_width, image_height,
                                           tile_width, tile_height);
 
+
     let framebuffer =
         cpu::debug_write_job_queue_to_framebuffer(image_width,
                                                   image_height,
@@ -544,29 +550,40 @@ fn main() {
                                image_height,
                                &framebuffer);
 
-    let dispatch = cpu::Dispatch::new(job_queue,
-                                      image_width, image_height,
-                                      MAX_DEPTH, SAMPLES_PER_PIXEL,
-                                      camera, world);
+    {
+        println!("-- Singlethreaded --");
+        // NOTE(patrik): Singlethreaded Version
+        let dispatch = cpu::Dispatch::new(job_queue.clone(),
+                                          image_width, image_height,
+                                          MAX_DEPTH, SAMPLES_PER_PIXEL,
+                                          camera.clone(), world.clone());
 
+        let framebuffer = cpu::dispatch_work_cpu_singlethreaded(dispatch);
 
-    /*
-    let framebuffer = cpu::dispatch_work_cpu_singlethreaded(dispatch);
+        write_framebuffer_to_image("singlethreaded.bmp",
+                                   image_width,
+                                   image_height,
+                                   &framebuffer);
+    }
 
-    write_framebuffer_to_image("result.bmp",
-                               image_width,
-                               image_height,
-                               &framebuffer);
-                               */
+    {
+        // NOTE(patrik): Multithreaded Version
+        let num_threads = num_cpus::get();
 
-    let framebuffer = cpu::dispatch_work_cpu_multithreaded(dispatch);
+        println!("-- Multithreaded ({}) --", num_threads);
+        let dispatch = cpu::Dispatch::new(job_queue,
+                                          image_width, image_height,
+                                          MAX_DEPTH, SAMPLES_PER_PIXEL,
+                                          camera, world);
 
-    write_framebuffer_to_image("result.bmp",
-                               image_width,
-                               image_height,
-                               &framebuffer);
+        let framebuffer = cpu::dispatch_work_cpu_multithreaded(dispatch,
+                                                               num_threads);
 
-        // let framebuffer = dispatch_work_cpu_singlethreaded();
-        // let framebuffer = dispatch_work_cpu_multithreaded();
-        // let framebuffer = dispatch_work_gpu_compute_shader();
+        write_framebuffer_to_image("multithreaded.bmp",
+                                   image_width,
+                                   image_height,
+                                   &framebuffer);
+    }
+
+    // let framebuffer = dispatch_work_gpu_compute_shader();
 }

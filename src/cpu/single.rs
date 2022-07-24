@@ -11,10 +11,14 @@ pub fn dispatch_work_cpu_singlethreaded(dispatch: Dispatch) -> Vec<Vec3> {
     let now = Instant::now();
 
     let mut job_queue = dispatch.job_queue;
+    let num_jobs = job_queue.len();
 
     let mut job_results = Vec::new();
     while !job_queue.is_empty() {
         let job = job_queue.pop_front().unwrap();
+
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
 
         let data = JobData {
             image_width: dispatch.image_width,
@@ -29,7 +33,11 @@ pub fn dispatch_work_cpu_singlethreaded(dispatch: Dispatch) -> Vec<Vec3> {
 
         let result = execute_job(&job, &data);
         job_results.push(result);
+
+        let perc = job_results.len() as f32 / num_jobs as f32;
+        print!("\rFinished Jobs: {:.2}", perc * 100.0);
     }
+    println!();
 
     let elapsed_time = now.elapsed();
     println!("Time: {:.2} s ({} ms)",
