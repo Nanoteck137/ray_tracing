@@ -518,7 +518,82 @@ fn write_framebuffer_to_image<P>(path: P,
         .expect("Failed to save image");
 }
 
+fn print_adapter(adapter: &wgpu::Adapter) {
+    let info = adapter.get_info();
+
+    let typ = match info.device_type {
+        wgpu::DeviceType::Other => "Other",
+        wgpu::DeviceType::IntegratedGpu => "Integrated GPU",
+        wgpu::DeviceType::DiscreteGpu => "Discrete GPU",
+        wgpu::DeviceType::VirtualGpu => "Virtual GPU",
+        wgpu::DeviceType::Cpu => "Software",
+    };
+
+    let backend = match info.backend {
+        wgpu::Backend::Empty  => "Empty",
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal  => "Metal",
+        wgpu::Backend::Dx12   => "Direct3D 12",
+        wgpu::Backend::Dx11   => "Direct3D 11",
+        wgpu::Backend::Gl     => "OpenGL",
+        wgpu::Backend::BrowserWebGpu => "Browser GPU",
+    };
+
+    println!("{} ({}): {}", backend, typ, info.name);
+}
+
+struct GpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+async fn initialize_wgpu() -> GpuContext {
+    let instance = wgpu::Instance::new(wgpu::Backends::all());
+
+    println!("---- Available adapters ----");
+    for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
+        print_adapter(&adapter);
+    }
+    println!("----------------------------");
+
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }).await.unwrap();
+
+    print!("Using: ");
+    print_adapter(&adapter);
+
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+        features: wgpu::Features::empty(),
+        limits: wgpu::Limits::default(),
+        label: None,
+    }, None).await.unwrap();
+
+    GpuContext {
+        instance,
+        adapter,
+        device,
+        queue
+    }
+}
+
+async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
+    Vec::new()
+}
+
 fn main() {
+    use pollster::FutureExt;
+
+    env_logger::init();
+    let context = initialize_wgpu().block_on();
+    let framebuffer = test_compute(&context).block_on();
+
+    return;
+
     let aspect_ratio = 16.0 / 9.0;
     let image_width = 1200;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
