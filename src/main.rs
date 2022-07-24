@@ -6,6 +6,13 @@ const MAX_DEPTH: usize = 4;
 
 mod cpu;
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+struct UniformData {
+    view_matrix_inv: [f32; 4 * 4],
+    projection_matrix_inv: [f32; 4 * 4],
+}
+
 struct Ray {
     origin: Vec3,
     dir: Vec3,
@@ -581,19 +588,26 @@ async fn initialize_wgpu() -> GpuContext {
     }
 }
 
-fn padded_bytes_per_row(width: u32) -> usize {
-    let bytes_per_row = width as usize * 4;
+fn padded_bytes_per_row(width: usize) -> usize {
+    let bytes_per_row = width * 4;
     let padding = (256 - bytes_per_row % 256) % 256;
     bytes_per_row + padding
 }
 
-async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
+async fn test_compute(context: &GpuContext,
+                      shader_binary: &[u8],
+                      camera: &Camera)
+    -> Vec<Vec3>
+{
     let device = &context.device;
     let queue = &context.queue;
 
+    let image_width = 1920usize;
+    let image_height = 1080usize;
+
     let output_texture_size = wgpu::Extent3d {
-        width: 512,
-        height: 512,
+        width: image_width as u32,
+        height: image_height as u32,
         depth_or_array_layers: 1,
     };
 
@@ -608,10 +622,10 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
             wgpu::TextureUsages::STORAGE_BINDING,
     });
 
-    let padded_size = padded_bytes_per_row(512);
-    let unpadded_size = 512 * 4;
+    let padded_size = padded_bytes_per_row(image_width);
+    let unpadded_size = image_width * 4;
 
-    let staging_buffer_size = padded_size * 512;
+    let staging_buffer_size = padded_size * image_height;
     println!("Staging Buffer Size: {}", staging_buffer_size);
 
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -621,7 +635,26 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
         mapped_at_creation: false,
     });
 
-    let shader_desc = wgpu::include_spirv!("comp.spv");
+    use wgpu::util::DeviceExt;
+
+    let uniform_data = UniformData {
+        view_matrix_inv: camera.view_matrix_inv.to_cols_array(),
+        projection_matrix_inv: camera.projection_matrix_inv.to_cols_array(),
+    };
+
+    let uniform_buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform_data]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        }
+    );
+
+    let shader_desc = wgpu::ShaderModuleDescriptor {
+        label: Some("test.comp Compute Shader"),
+        source: wgpu::util::make_spirv(shader_binary),
+    };
+
     let compute_module = device.create_shader_module(shader_desc);
 
     let compute_pipeline =
@@ -648,6 +681,11 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
                     &output_texture_view,
                 ),
             },
+
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: uniform_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -655,16 +693,23 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
         device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: None });
     {
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Grayscale pass"),
-        });
+        let mut compute_pass = encoder.begin_compute_pass(
+            &wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            }
+        );
 
         compute_pass.set_pipeline(&compute_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
-        let dispatch_width = 512 / 8;
-        let dispatch_height = 512 / 8;
-        compute_pass.dispatch_workgroups(dispatch_width, dispatch_height, 1);
+        let workgroup_width = 8;
+        let workgroup_height = 8;
+
+        let dispatch_width = (image_width + workgroup_width - 1) / workgroup_width;
+        let dispatch_height = (image_height + workgroup_height - 1) / workgroup_height;
+        compute_pass.dispatch_workgroups(dispatch_width as u32,
+                                         dispatch_height as u32,
+                                         1);
     }
 
     encoder.copy_texture_to_buffer(
@@ -679,7 +724,7 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
             layout: wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: std::num::NonZeroU32::new(padded_size as u32),
-                rows_per_image: std::num::NonZeroU32::new(512),
+                rows_per_image: std::num::NonZeroU32::new(image_height as u32),
             },
         },
         output_texture_size,
@@ -694,7 +739,7 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
 
     let padded_data = buffer_slice.get_mapped_range();
 
-    let mut pixels: Vec<u8> = vec![0; unpadded_size * 512 as usize];
+    let mut pixels: Vec<u8> = vec![0; unpadded_size * image_width as usize];
     for (padded, pixels) in padded_data
         .chunks_exact(padded_size)
         .zip(pixels.chunks_exact_mut(unpadded_size))
@@ -702,8 +747,8 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
         pixels.copy_from_slice(&padded[..unpadded_size]);
     }
 
-    let mut new_pixels: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); 512 * 512];
-    for i in 0..512 * 512 {
+    let mut new_pixels: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); image_width * image_height];
+    for i in 0..(image_width * image_height) {
         let r = pixels[i * 4 + 0] as f32 / 256.0;
         let g = pixels[i * 4 + 1] as f32 / 256.0;
         let b = pixels[i * 4 + 2] as f32 / 256.0;
@@ -717,24 +762,44 @@ async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
     staging_buffer.unmap();
 
     write_framebuffer_to_image("test.bmp",
-                               512,
-                               512,
+                               image_width,
+                               image_height,
                                &new_pixels);
 
     Vec::new()
+}
+
+fn hit_sphere(ray: &Ray, position: Vec3, radius: f32) -> bool {
+    let oc = ray.origin - position;
+    let a = ray.dir.dot(ray.dir);
+    let half_b = oc.dot(ray.dir);
+    let c = oc.dot(oc) - radius * radius;
+    let discriminant = half_b * half_b - a * c;
+
+    return discriminant > 0.0;
+}
+
+fn shoot_ray(ray: &Ray) -> Vec3 {
+    if(hit_sphere(ray, Vec3::new(4.0, 1.0, 0.0), 1.0)) {
+        return Vec3::new(1.0, 0.0, 0.0);
+    }
+
+    let dir = ray.dir.normalize();
+    let t = 0.5 * (dir.y + 1.0);
+
+    let color1 = Vec3::new(1.0, 1.0, 1.0);
+    let color2 = Vec3::new(0.5, 0.7, 1.0);
+
+    return (1.0 - t) * color1 + t * color2;
 }
 
 fn main() {
     use pollster::FutureExt;
 
     env_logger::init();
-    let context = initialize_wgpu().block_on();
-    let framebuffer = test_compute(&context).block_on();
-
-    return;
 
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 1200;
+    let image_width = 1920;
     let image_height = (image_width as f32 / aspect_ratio) as usize;
     println!("Width: {} Height: {}", image_width, image_height);
 
@@ -744,6 +809,43 @@ fn main() {
     let look_at = Vec3::new(0.0, 0.0, 0.0);
     let fov = 20.0;
     let camera = Camera::new(position, look_at, fov, aspect_ratio);
+
+    let mut compiler = shaderc::Compiler::new().unwrap();
+    let mut options = shaderc::CompileOptions::new().unwrap();
+    options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_0 as u32);
+
+    let source = include_str!("test.comp.glsl");
+    let result = compiler.compile_into_spirv(source,
+                                             shaderc::ShaderKind::Compute,
+                                             "test.comp",
+                                             "main",
+                                             None);
+
+    let result = result.unwrap();
+    let binary = result.as_binary_u8();
+
+    let context = initialize_wgpu().block_on();
+    let framebuffer = test_compute(&context, binary, &camera).block_on();
+
+    let mut framebuffer = vec![Vec3::new(0.0, 0.0, 0.0); image_width * image_height];
+    for y in 0..image_height {
+        for x in 0..image_width {
+            let u = x as f32 / image_width as f32;
+            let v = y as f32 / image_height as f32;
+
+            let ray = camera.get_ray(Vec2::new(u, v));
+            let color = shoot_ray(&ray);
+
+            framebuffer[x + y * image_width] = color;
+        }
+    }
+
+    write_framebuffer_to_image("test_cpu.bmp",
+                               image_width,
+                               image_height,
+                               &framebuffer);
+
+    return;
 
     let world = create_random_world();
     // let world = create_simple_world();
