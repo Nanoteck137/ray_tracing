@@ -581,7 +581,146 @@ async fn initialize_wgpu() -> GpuContext {
     }
 }
 
+fn padded_bytes_per_row(width: u32) -> usize {
+    let bytes_per_row = width as usize * 4;
+    let padding = (256 - bytes_per_row % 256) % 256;
+    bytes_per_row + padding
+}
+
 async fn test_compute(context: &GpuContext) -> Vec<Vec3> {
+    let device = &context.device;
+    let queue = &context.queue;
+
+    let output_texture_size = wgpu::Extent3d {
+        width: 512,
+        height: 512,
+        depth_or_array_layers: 1,
+    };
+
+    let output_texture = device.create_texture(&wgpu::TextureDescriptor{
+        label: Some("Compute Output Texture"),
+        size: output_texture_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_SRC |
+            wgpu::TextureUsages::STORAGE_BINDING,
+    });
+
+    let padded_size = padded_bytes_per_row(512);
+    let unpadded_size = 512 * 4;
+
+    let staging_buffer_size = padded_size * 512;
+    println!("Staging Buffer Size: {}", staging_buffer_size);
+
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: staging_buffer_size as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let shader_desc = wgpu::include_spirv!("comp.spv");
+    let compute_module = device.create_shader_module(shader_desc);
+
+    let compute_pipeline =
+        device.create_compute_pipeline(
+            &wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &compute_module,
+                entry_point: "main",
+            }
+    );
+
+    let output_texture_view =
+        output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &output_texture_view,
+                ),
+            },
+        ],
+    });
+
+    let mut encoder =
+        device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: None });
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Grayscale pass"),
+        });
+
+        compute_pass.set_pipeline(&compute_pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+
+        let dispatch_width = 512 / 8;
+        let dispatch_height = 512 / 8;
+        compute_pass.dispatch_workgroups(dispatch_width, dispatch_height, 1);
+    }
+
+    encoder.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture {
+            aspect: wgpu::TextureAspect::All,
+            texture: &output_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+        },
+        wgpu::ImageCopyBuffer {
+            buffer: &staging_buffer,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(padded_size as u32),
+                rows_per_image: std::num::NonZeroU32::new(512),
+            },
+        },
+        output_texture_size,
+    );
+
+    queue.submit([encoder.finish()]);
+
+    let buffer_slice = staging_buffer.slice(..);
+    buffer_slice.map_async(wgpu::MapMode::Read, move |v| {});
+
+    device.poll(wgpu::Maintain::Wait);
+
+    let padded_data = buffer_slice.get_mapped_range();
+
+    let mut pixels: Vec<u8> = vec![0; unpadded_size * 512 as usize];
+    for (padded, pixels) in padded_data
+        .chunks_exact(padded_size)
+        .zip(pixels.chunks_exact_mut(unpadded_size))
+    {
+        pixels.copy_from_slice(&padded[..unpadded_size]);
+    }
+
+    let mut new_pixels: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); 512 * 512];
+    for i in 0..512 * 512 {
+        let r = pixels[i * 4 + 0] as f32 / 256.0;
+        let g = pixels[i * 4 + 1] as f32 / 256.0;
+        let b = pixels[i * 4 + 2] as f32 / 256.0;
+        let a = pixels[i * 4 + 3] as f32 / 256.0;
+
+        let pixel = Vec3::new(r, g, b);
+        new_pixels[i] = pixel;
+    }
+
+    std::mem::drop(padded_data);
+    staging_buffer.unmap();
+
+    write_framebuffer_to_image("test.bmp",
+                               512,
+                               512,
+                               &new_pixels);
+
     Vec::new()
 }
 
