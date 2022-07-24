@@ -34,7 +34,7 @@ bool hitSphere(Ray ray, vec3 position, float radius) {
 
 vec3 shootRay(Ray ray) {
 
-    if(hitSphere(ray, vec3(4.0, 1.0, 0.0), 1.0)) {
+    if(hitSphere(ray, vec3(0.0, 0.0, -10.0), 1.0)) {
         return vec3(1.0, 0.0, 0.0);
     }
 
@@ -56,6 +56,7 @@ void main() {
     }
 
     vec2 uv = vec2(gl_GlobalInvocationID.xy) / output_size;
+    uv = uv * 2.0 - 1.0;
 
     vec3 origin = (view_matrix_inv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     vec3 dir = (projection_matrix_inv * vec4(uv, 0.0, 1.0)).xyz;

@@ -780,7 +780,7 @@ fn hit_sphere(ray: &Ray, position: Vec3, radius: f32) -> bool {
 }
 
 fn shoot_ray(ray: &Ray) -> Vec3 {
-    if(hit_sphere(ray, Vec3::new(4.0, 1.0, 0.0), 1.0)) {
+    if(hit_sphere(ray, Vec3::new(0.0, 0.0, -10.0), 1.0)) {
         return Vec3::new(1.0, 0.0, 0.0);
     }
 
@@ -805,8 +805,8 @@ fn main() {
 
     println!("Available Cores: {}", num_cpus::get());
 
-    let position = Vec3::new(13.0, 2.0, 3.0);
-    let look_at = Vec3::new(0.0, 0.0, 0.0);
+    let position = Vec3::new(0.0, 0.0, 0.0);
+    let look_at = Vec3::new(0.0, 0.0, -1.0);
     let fov = 20.0;
     let camera = Camera::new(position, look_at, fov, aspect_ratio);
 
@@ -832,6 +832,8 @@ fn main() {
         for x in 0..image_width {
             let u = x as f32 / image_width as f32;
             let v = y as f32 / image_height as f32;
+            let u = u * 2.0 - 1.0;
+            let v = v * 2.0 - 1.0;
 
             let ray = camera.get_ray(Vec2::new(u, v));
             let color = shoot_ray(&ray);
