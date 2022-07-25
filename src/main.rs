@@ -13,6 +13,24 @@ mod cpu;
 struct UniformData {
     view_matrix_inv: [f32; 4 * 4],
     projection_matrix_inv: [f32; 4 * 4],
+    num_spheres: i32,
+    padding: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+struct GpuSphere {
+    position: [f32; 3],
+    radius: f32,
+    material_id: i32,
+    padding: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+struct GpuMaterial {
+    albedo: [f32; 3],
+    padding: u32,
 }
 
 struct Ray {
@@ -599,7 +617,8 @@ fn padded_bytes_per_row(width: usize) -> usize {
 
 async fn test_compute(context: &GpuContext,
                       shader_binary: &[u8],
-                      camera: &Camera)
+                      camera: &Camera,
+                      world: &World)
     -> Vec<Vec3>
 {
     let device = &context.device;
@@ -640,9 +659,30 @@ async fn test_compute(context: &GpuContext,
 
     use wgpu::util::DeviceExt;
 
+    let mut spheres: Vec<GpuSphere> = Vec::new();
+    let mut materials: Vec<GpuMaterial> = Vec::new();
+
+    for material in &world.materials {
+        materials.push(GpuMaterial {
+            albedo: material.color.to_array(),
+            padding: 0,
+        });
+    }
+
+    for sphere in &world.spheres {
+        spheres.push(GpuSphere {
+            position: sphere.position.to_array(),
+            radius: sphere.radius,
+            material_id: sphere.material_id as i32,
+            padding: [0; 3]
+        });
+    }
+
     let uniform_data = UniformData {
         view_matrix_inv: camera.view_matrix_inv.to_cols_array(),
         projection_matrix_inv: camera.projection_matrix_inv.to_cols_array(),
+        num_spheres: spheres.len() as i32,
+        padding: [0; 3],
     };
 
     let uniform_buffer = device.create_buffer_init(
@@ -650,6 +690,22 @@ async fn test_compute(context: &GpuContext,
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniform_data]),
             usage: wgpu::BufferUsages::UNIFORM,
+        }
+    );
+
+    let sphere_buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Sphere Buffer"),
+            contents: bytemuck::cast_slice(&spheres[..]),
+            usage: wgpu::BufferUsages::STORAGE,
+        }
+    );
+
+    let material_buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Material Buffer"),
+            contents: bytemuck::cast_slice(&materials[..]),
+            usage: wgpu::BufferUsages::STORAGE,
         }
     );
 
@@ -688,6 +744,16 @@ async fn test_compute(context: &GpuContext,
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: uniform_buffer.as_entire_binding(),
+            },
+
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: sphere_buffer.as_entire_binding(),
+            },
+
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: material_buffer.as_entire_binding(),
             },
         ],
     });
@@ -772,35 +838,6 @@ async fn test_compute(context: &GpuContext,
     Vec::new()
 }
 
-fn hit_sphere(ray: &Ray, position: Vec3, radius: f32) -> bool {
-    let oc = ray.origin - position;
-    let a = ray.dir.dot(ray.dir);
-    let half_b = oc.dot(ray.dir);
-    let c = oc.dot(oc) - radius * radius;
-    let discriminant = half_b * half_b - a * c;
-
-    return discriminant > 0.0;
-}
-
-fn shoot_ray(ray: &Ray) -> Vec3 {
-    if hit_sphere(ray, Vec3::new(0.0, 0.0, -10.0), 1.0) {
-        return Vec3::new(1.0, 0.0, 0.0);
-    }
-
-    let dir = ray.dir.normalize();
-    let t = 0.5 * (dir.y + 1.0);
-
-    let color1 = Vec3::new(1.0, 1.0, 1.0);
-    let color2 = Vec3::new(0.5, 0.7, 1.0);
-
-    return (1.0 - t) * color1 + t * color2;
-}
-
-fn compile_shader<P>(path: P)
-    where P: AsRef<Path>
-{
-}
-
 fn main() {
     use pollster::FutureExt;
 
@@ -813,10 +850,12 @@ fn main() {
 
     println!("Available Cores: {}", num_cpus::get());
 
-    let position = Vec3::new(0.0, 0.0, 0.0);
-    let look_at = Vec3::new(0.0, 0.0, -1.0);
+    let position = Vec3::new(13.0, 2.0, 3.0);
+    let look_at = Vec3::new(0.0, 0.0, 0.0);
     let fov = 20.0;
     let camera = Camera::new(position, look_at, fov, aspect_ratio);
+
+    let world = create_random_world();
 
     let mut compiler = shaderc::Compiler::new().unwrap();
     let mut options = shaderc::CompileOptions::new().unwrap();
@@ -841,11 +880,10 @@ fn main() {
 
     let shader_binary = result.as_binary_u8();
     let context = initialize_wgpu().block_on();
-    let framebuffer = test_compute(&context, shader_binary, &camera).block_on();
+    let framebuffer = test_compute(&context, shader_binary, &camera, &world).block_on();
 
     return;
 
-    let world = create_random_world();
     // let world = create_simple_world();
 
     let tile_width = 64;
